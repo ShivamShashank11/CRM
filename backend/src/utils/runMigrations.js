@@ -13,25 +13,33 @@ const __dirname = path.dirname(__filename);
 function splitSql(sql) {
   return sql
     .replace(/\r\n/g, "\n")
-    .replace(/\/\*[\s\S]*?\*\//g, "")   // remove /* */ comments
-    .split(/;\s*(?:\n|$)/)              // split on semicolon end
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split(/;\s*(?:\n|$)/)
     .map(s => s.trim())
     .filter(s => s.length && !s.startsWith("--"));
 }
 
 async function run() {
   try {
-    const schemaPath = path.join(__dirname, "..", "models", "schema.sql");
-    if (!fs.existsSync(schemaPath)) {
-      throw new Error(`schema.sql not found at ${schemaPath}`);
-    }
+    const dbName = process.env.DB_NAME;
+    if (!dbName) throw new Error("DB_NAME env not set");
 
-    const sql = fs.readFileSync(schemaPath, "utf8");
-    const statements = splitSql(sql);
+    // 1) Ensure DB exists, then USE it (session-level)
+    await pool.query(`CREATE DATABASE IF NOT EXISTS \`${dbName}\``);
+    await pool.query(`USE \`${dbName}\``);
 
     const [[dbRow]] = await pool.query("SELECT DATABASE() AS db");
     console.log("🔎 Using database:", dbRow?.db || "(none)");
 
+    // 2) Load schema file
+    const schemaPath = path.join(__dirname, "..", "models", "schema.sql");
+    if (!fs.existsSync(schemaPath)) {
+      throw new Error(`schema.sql not found at ${schemaPath}`);
+    }
+    const sql = fs.readFileSync(schemaPath, "utf8");
+    const statements = splitSql(sql);
+
+    // 3) Execute statements
     for (let i = 0; i < statements.length; i++) {
       const stmt = statements[i];
       try {
@@ -42,6 +50,7 @@ async function run() {
       }
     }
 
+    // 4) Show tables present
     const [tables] = await pool.query("SHOW TABLES");
     console.log("✅ Migration applied: schema ready");
     console.log("🗂️ Tables now present:", tables);

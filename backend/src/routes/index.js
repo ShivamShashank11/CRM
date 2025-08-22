@@ -21,11 +21,11 @@ router.post("/ping", (req, res) => {
 
 // 🔍 Debug route (safe to keep/ remove later)
 // GET /api/_debug/tables
-router.get("/_debug/tables", async (_req, res, next) => {
+router.get("/_debug/db", async (_req, res, next) => {
   try {
+    const [[dbRow]] = await pool.query("SELECT DATABASE() AS db");
     const [tables] = await pool.query("SHOW TABLES");
-    const [users] = await pool.query("DESCRIBE users");
-    res.json({ tables, users });
+    res.json({ db: dbRow?.db || null, tables });
   } catch (e) {
     next(e);
   }
