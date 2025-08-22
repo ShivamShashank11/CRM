@@ -8,6 +8,7 @@
     "dev": "nodemon --watch src --ext js,json --exec \"node ./src/server.js\"",
     "start": "node src/server.js",
     "migrate": "node src/utils/runMigrations.js",
+    "start:with:migrate": "npm run migrate && npm run start",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
