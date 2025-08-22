@@ -1,37 +1,75 @@
 ﻿// src/lib/api.js
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:5000/api";
-const DEFAULT_TIMEOUT_MS = 15000; // 15s safety timeout
 
-function jsonOrText(text) {
-  try { return JSON.parse(text); } catch { return text; }
+// ==== CONFIG ================================================================
+// PRODUCTION: set in Render (Frontend -> Environment):
+//   VITE_API_BASE=https://crm-6hgs.onrender.com
+// LOCAL DEV: put in .env.local
+//   VITE_API_BASE=http://localhost:5000
+// NOTE: No /api prefix assumed. If your backend is mounted at /api,
+// change local/prod envs to include /api (e.g. https://.../api).
+
+const RAW_BASE = import.meta.env.VITE_API_BASE || "http://localhost:5000";
+const DEFAULT_TIMEOUT_MS = 15000; // 15s
+
+// Normalize base: remove trailing slash
+const API_BASE = RAW_BASE.replace(/\/+$/, "");
+
+// Small helper: ensure we always join with a single slash
+function joinUrl(base, path) {
+  const p = String(path || "");
+  const withSlash = p.startsWith("/") ? p : `/${p}`;
+  return `${base}${withSlash}`;
 }
 
+function isJsonContentType(ct) {
+  if (!ct) return false;
+  return ct.toLowerCase().includes("application/json");
+}
+
+function jsonOrText(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+// Optional debug log (prints only in dev)
+function dbg(...args) {
+  if (import.meta.env.DEV) console.debug("[api]", ...args);
+}
+
+// ==== CORE REQUEST ==========================================================
 async function request(
   path,
   { method = "GET", body, auth = true, timeoutMs = DEFAULT_TIMEOUT_MS } = {}
 ) {
-  const headers = {
-    "Accept": "application/json",
-    "Content-Type": "application/json",
+  const urlBase = joinUrl(API_BASE, path);
 
-    // Strongly ask browser/CDN not to cache
-    "Cache-Control": "no-cache, no-store, max-age=0, must-revalidate",
-    "Pragma": "no-cache",
-  };
-
-  const token = localStorage.getItem("token");
-  if (auth && token) headers["Authorization"] = `Bearer ${token}`;
-
-  // cache-busting query for GETs to avoid 304/stale data
-  let url = `${API_BASE}${path}`;
+  // Add cache-busting only for GET
+  let url = urlBase;
   if (method.toUpperCase() === "GET") {
     const sep = url.includes("?") ? "&" : "?";
     url = `${url}${sep}_=${Date.now()}`;
   }
 
-  // timeout guard
+  const headers = {
+    Accept: "application/json",
+    // Only set Content-Type if we're sending a JSON body
+    ...(body ? { "Content-Type": "application/json" } : {}),
+    // Tell proxies/CDNs not to cache
+    "Cache-Control": "no-cache, no-store, max-age=0, must-revalidate",
+    Pragma: "no-cache",
+  };
+
+  // Bearer token auth (no cookies)
+  const token = (auth && (localStorage.getItem("token") || sessionStorage.getItem("token"))) || null;
+  if (auth && token) headers.Authorization = `Bearer ${token}`;
+
   const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), timeoutMs);
+  const timeoutId = setTimeout(() => ac.abort(), timeoutMs);
+
+  dbg(method, url, { hasBody: !!body, auth });
 
   let res;
   try {
@@ -39,39 +77,47 @@ async function request(
       method,
       headers,
       body: body ? JSON.stringify(body) : undefined,
-      cache: "no-store",        // tell fetch not to use HTTP cache
+      cache: "no-store",
       signal: ac.signal,
-      credentials: "omit",      // no cookies needed (JWT in header)
+      credentials: "omit", // we use Authorization header, not cookies
     });
   } catch (e) {
-    clearTimeout(t);
-    // Network / timeout error
-    if (e.name === "AbortError") {
+    clearTimeout(timeoutId);
+    if (e?.name === "AbortError") {
       throw new Error("Request timed out. Please try again.");
     }
-    throw new Error(e.message || "Network error");
+    // Typical “Failed to fetch” / CORS / DNS / SSL errors end up here
+    throw new Error(`Network/CORS error: ${e?.message || "Failed to fetch"}`);
   } finally {
-    clearTimeout(t);
+    clearTimeout(timeoutId);
   }
 
-  const text = await res.text();
-  const data = jsonOrText(text);
+  // Parse response
+  const ct = res.headers.get("content-type") || "";
+  const raw = await res.text();
+  const data = isJsonContentType(ct) ? jsonOrText(raw) : raw;
 
   if (!res.ok) {
-    const msg = typeof data === "string" ? data : (data?.error || res.statusText || "Request failed");
+    // Prefer server-provided message if JSON, else statusText
+    const serverMsg =
+      typeof data === "string" ? data : data?.error || data?.message;
+    const msg = serverMsg || res.statusText || "Request failed";
 
-    // Handle auth expiry: clear and send to login
+    // Handle expired/invalid auth
     if (res.status === 401 && auth) {
-      try { localStorage.removeItem("token"); } catch {}
+      try {
+        localStorage.removeItem("token");
+        sessionStorage.removeItem("token");
+      } catch {}
       if (location.pathname !== "/login") {
-        // Use replace to avoid broken back button loop
+        // Avoid back-button loops
         window.location.replace("/login");
       }
     }
 
-    // 304 should never happen because of cache-busting, but just in case:
+    // 304 should not occur due to cache-busting, but just in case
     if (res.status === 304) {
-      throw new Error("Not modified (cached) — busting cache failed.");
+      throw new Error("Not modified (cached) — cache-busting failed.");
     }
 
     console.error("API error", res.status, msg);
@@ -80,6 +126,8 @@ async function request(
 
   return data;
 }
+
+// ==== PUBLIC API ============================================================
 
 export const api = {
   // Auth
@@ -111,4 +159,25 @@ export const api = {
   createActivity: (body)     => request("/activities", { method: "POST", body }),
   updateActivity: (id, body) => request(`/activities/${id}`, { method: "PUT", body }),
   deleteActivity: (id)       => request(`/activities/${id}`, { method: "DELETE" }),
+
+  // Helpers (optional): manual token control
+  setToken(token, remember = true) {
+    try {
+      if (remember) {
+        localStorage.setItem("token", token);
+        sessionStorage.removeItem("token");
+      } else {
+        sessionStorage.setItem("token", token);
+        localStorage.removeItem("token");
+      }
+    } catch {}
+  },
+  clearToken() {
+    try {
+      localStorage.removeItem("token");
+      sessionStorage.removeItem("token");
+    } catch {}
+  },
 };
+
+export default api;
