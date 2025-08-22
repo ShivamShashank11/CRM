@@ -11,18 +11,18 @@ dotenv.config();
 const app = express();
 const BOOT_TIME = Date.now();
 
-// App hardening & perf
+// ---------- Security & Performance ----------
 app.set("trust proxy", 1);
 app.set("etag", false);
 
-// Middleware
+// ---------- Middleware ----------
 app.use(
   cors({
     origin: [
-      "http://localhost:5173", // local frontend
-      "https://crm-6hgs.onrender.com", // Render frontend
+      "http://localhost:5173",                 // ✅ Local frontend (Vite dev server)
+      "https://crm-frontend-8vo3.onrender.com" // ✅ Render frontend
     ],
-    credentials: false,
+    credentials: true, // allow cookies/authorization headers
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
@@ -31,13 +31,13 @@ app.use(
 app.use(express.json({ limit: "1mb" }));
 app.use(morgan("dev"));
 
-// Prevent browser/proxy caching for API responses
+// Prevent caching of API responses
 app.use((req, res, next) => {
   res.set("Cache-Control", "no-store");
   next();
 });
 
-// Root (simple info)
+// ---------- Root info ----------
 app.get("/", (req, res) => {
   res.json({
     ok: true,
@@ -47,14 +47,16 @@ app.get("/", (req, res) => {
   });
 });
 
-// Health handler (pings DB)
+// ---------- Health check ----------
 const healthHandler = async (_req, res) => {
   try {
     const dbOk = await testDB();
     if (!dbOk) {
-      return res
-        .status(500)
-        .json({ ok: false, service: "crm-backend", db: "fail" });
+      return res.status(500).json({
+        ok: false,
+        service: "crm-backend",
+        db: "fail",
+      });
     }
     res.status(200).json({
       ok: true,
@@ -72,18 +74,19 @@ const healthHandler = async (_req, res) => {
   }
 };
 
-// Expose both (use either one for Render probes)
 app.get("/health", healthHandler);
 app.get("/api/health", healthHandler);
 
-// 👇 Default /api root (instead of 404)
+// ---------- API welcome ----------
 app.get("/api", (req, res) => {
   res.json({
     ok: true,
     service: "crm-backend",
     message: "Welcome to CRM API",
     endpoints: [
-      "/api/auth",
+      "/api/auth/login",
+      "/api/auth/register",
+      "/api/auth/me",
       "/api/companies",
       "/api/contacts",
       "/api/deals",
@@ -92,25 +95,28 @@ app.get("/api", (req, res) => {
   });
 });
 
-// Mount feature routes -> /api/auth, /api/companies, /api/contacts, /api/deals, /api/activities
+// ---------- Mount routes ----------
 app.use("/api", router);
 
-// 404 (after all routes)
+// ---------- 404 fallback ----------
 app.use((req, res) => {
-  res.status(404).json({ error: `API route not found: ${req.originalUrl}` });
+  res.status(404).json({
+    error: `API route not found: ${req.originalUrl}`,
+  });
 });
 
-// Centralized error handler
+// ---------- Error handler ----------
 app.use((err, req, res, _next) => {
   console.error("Unhandled error:", err);
-  const status = err.status || 500;
-  res.status(status).json({ error: err.message || "Server error" });
+  res.status(err.status || 500).json({
+    error: err.message || "Server error",
+  });
 });
 
+// ---------- Boot ----------
 const PORT = process.env.PORT || 5000;
 let server;
 
-// Boot
 (async () => {
   try {
     const ok = await testDB();
@@ -127,7 +133,7 @@ let server;
   });
 })();
 
-// Graceful shutdown (good for Render)
+// ---------- Graceful shutdown ----------
 const shutdown = (signal) => {
   console.log(`\n${signal} received. Shutting down gracefully...`);
   if (server) {
