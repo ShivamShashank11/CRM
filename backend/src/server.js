@@ -18,10 +18,16 @@ app.set("etag", false);
 // Middleware
 app.use(
   cors({
-    origin: true, // reflect request origin
-    credentials: true,
+    origin: [
+      "http://localhost:5173", // local frontend
+      "https://crm-6hgs.onrender.com", // Render frontend
+    ],
+    credentials: false,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
+
 app.use(express.json({ limit: "1mb" }));
 app.use(morgan("dev"));
 
@@ -46,7 +52,9 @@ const healthHandler = async (_req, res) => {
   try {
     const dbOk = await testDB();
     if (!dbOk) {
-      return res.status(500).json({ ok: false, service: "crm-backend", db: "fail" });
+      return res
+        .status(500)
+        .json({ ok: false, service: "crm-backend", db: "fail" });
     }
     res.status(200).json({
       ok: true,
@@ -68,12 +76,28 @@ const healthHandler = async (_req, res) => {
 app.get("/health", healthHandler);
 app.get("/api/health", healthHandler);
 
+// 👇 Default /api root (instead of 404)
+app.get("/api", (req, res) => {
+  res.json({
+    ok: true,
+    service: "crm-backend",
+    message: "Welcome to CRM API",
+    endpoints: [
+      "/api/auth",
+      "/api/companies",
+      "/api/contacts",
+      "/api/deals",
+      "/api/activities",
+    ],
+  });
+});
+
 // Mount feature routes -> /api/auth, /api/companies, /api/contacts, /api/deals, /api/activities
 app.use("/api", router);
 
 // 404 (after all routes)
 app.use((req, res) => {
-  res.status(404).json({ error: "Not found" });
+  res.status(404).json({ error: `API route not found: ${req.originalUrl}` });
 });
 
 // Centralized error handler
@@ -90,7 +114,9 @@ let server;
 (async () => {
   try {
     const ok = await testDB();
-    console.log(ok ? "✅ MySQL connection successful" : "⚠️ MySQL test query failed");
+    console.log(
+      ok ? "✅ MySQL connection successful" : "⚠️ MySQL test query failed"
+    );
   } catch (err) {
     console.error("❌ MySQL connection error:", err.message);
     process.exit(1);
@@ -109,7 +135,6 @@ const shutdown = (signal) => {
       console.log("🛑 HTTP server closed.");
       process.exit(0);
     });
-    // Force exit if not closed in time
     setTimeout(() => {
       console.warn("Force exiting after timeout.");
       process.exit(1);

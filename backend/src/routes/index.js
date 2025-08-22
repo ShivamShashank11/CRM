@@ -1,5 +1,4 @@
-﻿// src/routes/index.js
-import { Router } from "express";
+﻿import { Router } from "express";
 import { pool } from "../config/db.js";
 
 import authRoutes from "./auth.routes.js";
@@ -10,17 +9,17 @@ import activityRoutes from "./activities.routes.js";
 
 const router = Router();
 
-// Health & ping
+// Health inside API
 router.get("/health", (_req, res) => {
   res.json({ ok: true, service: "crm-backend" });
 });
 
+// Ping test
 router.post("/ping", (req, res) => {
-  res.json({ ok: true, method: req.method, got: req.body ?? null });
+  res.json({ ok: true, got: req.body ?? null });
 });
 
-// 🔍 Debug route (safe to keep/ remove later)
-// GET /api/_debug/tables
+// DB debug
 router.get("/_debug/db", async (_req, res, next) => {
   try {
     const [[dbRow]] = await pool.query("SELECT DATABASE() AS db");
@@ -37,5 +36,10 @@ router.use("/companies", companyRoutes);
 router.use("/contacts", contactRoutes);
 router.use("/deals", dealRoutes);
 router.use("/activities", activityRoutes);
+
+// 404 inside API
+router.use((req, res) => {
+  res.status(404).json({ error: `API route not found: ${req.originalUrl}` });
+});
 
 export default router;
