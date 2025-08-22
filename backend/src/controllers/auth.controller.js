@@ -8,10 +8,14 @@ const { JWT_SECRET } = process.env;
 
 function ensureJwt() {
   if (!JWT_SECRET) {
-    const msg = "JWT_SECRET is not set";
-    console.error(msg);
-    throw Object.assign(new Error(msg), { status: 500 });
+    const err = new Error("JWT_SECRET is not set");
+    err.status = 500;
+    throw err;
   }
+}
+
+function errPayload(e) {
+  return { error: e?.code || e?.sqlMessage || e?.message || "Server error" };
 }
 
 export async function register(req, res) {
@@ -21,8 +25,10 @@ export async function register(req, res) {
     if (!name || !email || !password) {
       return res.status(400).json({ error: "name, email, password required" });
     }
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      return res.status(400).json({ error: "invalid email" });
+    }
 
-    // pre-check to give a friendly message (unique index still protects)
     const [exists] = await pool.query("SELECT id FROM users WHERE email = ?", [email]);
     if (exists.length) {
       return res.status(409).json({ error: "Email already registered" });
@@ -30,23 +36,29 @@ export async function register(req, res) {
 
     const password_hash = await bcrypt.hash(password, 10);
 
-    // role has default 'USER' in schema; set explicitly to be clear
+    // IMPORTANT: do NOT reference 'role' column here; let DB default handle it.
     const [result] = await pool.query(
-      "INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, 'USER')",
+      "INSERT INTO users (name, email, password_hash) VALUES (?,?,?)",
       [name, email, password_hash]
     );
 
-    const user = { id: result.insertId, name, email, role: "USER" };
-    const token = jwt.sign({ sub: user.id, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+    // fetch row to include role if present
+    const [rows] = await pool.query(
+      "SELECT id, name, email, role FROM users WHERE id = ?",
+      [result.insertId]
+    );
+    const user = rows[0] || { id: result.insertId, name, email, role: "USER" };
+
+    const token = jwt.sign({ sub: user.id, role: user.role || "USER" }, JWT_SECRET, {
+      expiresIn: JWT_EXPIRES_IN,
+    });
     return res.status(201).json({ user, token });
   } catch (e) {
-    // Handle MySQL duplicate key race gracefully
-    if (e && e.code === "ER_DUP_ENTRY") {
+    if (e?.code === "ER_DUP_ENTRY") {
       return res.status(409).json({ error: "Email already registered" });
     }
     console.error("register error:", e);
-    const status = e.status || 500;
-    return res.status(status).json({ error: "Server error" });
+    return res.status(e.status || 500).json(errPayload(e));
   }
 }
 
@@ -77,7 +89,6 @@ export async function login(req, res) {
     return res.json({ user, token });
   } catch (e) {
     console.error("login error:", e);
-    const status = e.status || 500;
-    return res.status(status).json({ error: "Server error" });
+    return res.status(e.status || 500).json(errPayload(e));
   }
 }
